@@ -182,7 +182,7 @@ life_record/                     # 项目根目录
 ### 2.4 模块配置系统
 ```dart
 // 模块配置模型
-class ModuleConfig {
+class SCModuleConfig {
   final String id;              // 模块唯一标识
   final String name;            // 模块名称
   final String icon;            // 模块图标
@@ -194,7 +194,7 @@ class ModuleConfig {
 }
 
 // 导航配置
-class NavigationConfig {
+class SCNavigationConfig {
   final List<BottomNavItem> bottomNavItems;  // 底部导航项
   final List<DrawerMenuItem> drawerItems;    // 抽屉菜单项
   final List<ModuleCard> moduleCards;        // 主页模块卡片
@@ -596,9 +596,9 @@ stateDiagram-v2
 
 ### 4.2 数据模型设计
 
-#### 4.2.1 收支记录模型 (Transaction)
+#### 4.2.1 收支记录模型 (SCTransaction)
 ```dart
-class Transaction {
+class SCTransaction {
   final int? id;
   final double amount;           // 金额
   final String type;             // 'income' 或 'expense'
@@ -611,7 +611,7 @@ class Transaction {
   final DateTime createdAt;      // 创建时间
   final DateTime? updatedAt;     // 更新时间
 
-  Transaction({
+  SCTransaction({
     this.id,
     required this.amount,
     required this.type,
@@ -627,9 +627,9 @@ class Transaction {
 }
 ```
 
-#### 4.2.2 收支分类模型 (Category)
+#### 4.2.2 收支分类模型 (SCCategory)
 ```dart
-class Category {
+class SCCategory {
   final int? id;
   final String name;             // 分类名称
   final String type;             // 'income' 或 'expense'
@@ -641,7 +641,7 @@ class Category {
   final DateTime? createdAt;     // 创建时间
   final DateTime? updatedAt;     // 更新时间
 
-  Category({
+  SCCategory({
     this.id,
     required this.name,
     required this.type,
@@ -698,8 +698,8 @@ class DatabaseService {
   Future<Database> initDatabase();
 
   // 收支记录 CRUD 操作
-  Future<int> insertTransaction(Transaction transaction);
-  Future<List<Transaction>> getTransactions({
+  Future<int> insertTransaction(SCTransaction transaction);
+  Future<List<SCTransaction>> getTransactions({
     DateTime? startDate,
     DateTime? endDate,
     String? type,  // 'income', 'expense', or null for all
@@ -709,20 +709,20 @@ class DatabaseService {
     double? maxAmount,
     String? searchKeyword,  // 备注搜索关键词
   });
-  Future<List<Transaction>> getTransactionsByCategory({
+  Future<List<SCTransaction>> getTransactionsByCategory({
     required String categoryName,
     DateTime? startDate,
     DateTime? endDate,
   });
-  Future<int> updateTransaction(Transaction transaction);
+  Future<int> updateTransaction(SCTransaction transaction);
   Future<int> deleteTransaction(int id);
 
   // 分类 CRUD 操作
-  Future<int> insertCategory(Category category);
-  Future<List<Category>> getCategories(String type);  // 获取所有分类（树形结构）
-  Future<List<Category>> getParentCategories(String type);  // 获取大类
-  Future<List<Category>> getChildCategories(int parentId);  // 获取指定大类下的小类
-  Future<int> updateCategory(Category category);
+  Future<int> insertCategory(SCCategory category);
+  Future<List<SCCategory>> getCategories(String type);  // 获取所有分类（树形结构）
+  Future<List<SCCategory>> getParentCategories(String type);  // 获取大类
+  Future<List<SCCategory>> getChildCategories(int parentId);  // 获取指定大类下的小类
+  Future<int> updateCategory(SCCategory category);
   Future<int> deleteCategory(int id);
 
   // 统计查询
@@ -768,7 +768,7 @@ class DatabaseService {
 
 #### 4.4.1.2 主页布局配置
 ```dart
-class HomeLayoutConfig {
+class SCHomeLayoutConfig {
   final int crossAxisCount;      // 网格列数（响应式调整）
   final double cardAspectRatio;  // 卡片宽高比
   final List<String> moduleOrder; // 模块显示顺序
@@ -861,8 +861,8 @@ class HomeLayoutConfig {
 ```dart
 // 模块管理状态管理
 class ModuleProvider extends ChangeNotifier {
-  List<ModuleConfig> _enabledModules = [];
-  List<ModuleConfig> _availableModules = [];
+  List<SCModuleConfig> _enabledModules = [];
+  List<SCModuleConfig> _availableModules = [];
   Map<String, dynamic> _moduleSettings = {};
 
   // 模块管理方法
@@ -873,16 +873,16 @@ class ModuleProvider extends ChangeNotifier {
   Future<void> updateModuleSettings(String moduleId, Map<String, dynamic> settings) async { ... }
 
   // 计算属性
-  List<ModuleConfig> get enabledModules => _enabledModules;
-  List<ModuleConfig> get availableModules => _availableModules;
+  List<SCModuleConfig> get enabledModules => _enabledModules;
+  List<SCModuleConfig> get availableModules => _availableModules;
   bool isModuleEnabled(String moduleId) => _enabledModules.any((m) => m.id == moduleId);
 }
 
-class TransactionProvider extends ChangeNotifier {
+class SCTransactionProvider extends ChangeNotifier {
   final DatabaseService _databaseService;
-  List<Transaction> _transactions = [];
-  List<Category> _incomeCategories = [];
-  List<Category> _expenseCategories = [];
+  List<SCTransaction> _transactions = [];
+  List<SCCategory> _incomeCategories = [];
+  List<SCCategory> _expenseCategories = [];
 
   // 筛选状态
   DateTime? _filterStartDate;
@@ -901,8 +901,8 @@ class TransactionProvider extends ChangeNotifier {
   // 业务方法
   Future<void> loadTransactions() async { ... }
   Future<void> loadFilteredTransactions() async { ... }  // 加载筛选后的交易记录
-  Future<void> addTransaction(Transaction transaction) async { ... }
-  Future<void> updateTransaction(Transaction transaction) async { ... }
+  Future<void> addTransaction(SCTransaction transaction) async { ... }
+  Future<void> updateTransaction(SCTransaction transaction) async { ... }
   Future<void> deleteTransaction(int id) async { ... }
 
   // 筛选方法
@@ -1201,13 +1201,13 @@ graph TB
     end
 
     subgraph "模块化系统 (Module System)"
-        E[模块配置 ModuleConfig]
+        E[模块配置 SCModuleConfig]
         F[模块管理器 ModuleManager]
         G[路由管理 NavigationManager]
     end
 
     subgraph "状态管理层 (State Management)"
-        H[TransactionProvider]
+        H[SCTransactionProvider]
         I[ModuleProvider]
         J[其他Provider]
     end
@@ -1379,8 +1379,8 @@ graph TB
     end
 
     subgraph "数据模型 (models/finance/)"
-        C1[Transaction]
-        C2[Category]
+        C1[SCTransaction]
+        C2[SCCategory]
         C3[FilterCriteria]
     end
 
@@ -1593,7 +1593,7 @@ flowchart TD
 
 2. **定义模块配置**:
    ```dart
-   final diaryModule = ModuleConfig(
+   final diaryModule = SCModuleConfig(
      id: 'diary',
      name: '日记',
      icon: '📓',
@@ -1618,7 +1618,7 @@ flowchart TD
      List<ModuleProvider> get providers => [DiaryProvider()];
 
      @override
-     ModuleConfig get config => diaryModule;
+     SCModuleConfig get config => diaryModule;
 
      @override
      Widget getHomeCard() => DiaryHomeCard();
