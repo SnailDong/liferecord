@@ -11,10 +11,14 @@
 
 ### 2.1 技术栈
 - **前端框架**: Flutter 3.x
-- **状态管理**: Provider + Riverpod (未来扩展考虑)
+- **路由管理**: FlutterBoost (原生-Flutter混合导航)
+- **状态管理**: GetX (MVVM架构，响应式状态管理)
 - **本地数据库**: SQLite (通过sqflite包)
 - **UI组件**: Material Design 3
-- **国际化**: flutter_localizations (预留)
+- **页面缓存**: BoostCacheWidget (性能优化)
+- **屏幕适配**: flutter_screenutil
+- **国际化**: flutter_localizations
+- **工具库**: flutter_smart_dialog, geocoding, 等
 
 ### 2.2 项目结构
 
@@ -29,7 +33,8 @@ life_record/                     # 项目根目录
 │   │   ├── finance/             # 财务模块数据模型
 │   │   │   ├── transaction.dart # 交易记录模型
 │   │   │   ├── category.dart    # 分类模型
-│   │   │   └── filter_criteria.dart # 筛选条件模型
+│   │   │   ├── filter_criteria.dart # 筛选条件模型
+│   │   │   └── filter_preset.dart   # 筛选模板模型
 │   │   ├── diary/               # 日记模块数据模型（预留）
 │   │   ├── habit/               # 习惯模块数据模型（预留）
 │   │   ├── health/              # 健康模块数据模型（预留）
@@ -182,7 +187,7 @@ life_record/                     # 项目根目录
 ### 2.4 模块配置系统
 ```dart
 // 模块配置模型
-class SCModuleConfig {
+class ModuleConfig {
   final String id;              // 模块唯一标识
   final String name;            // 模块名称
   final String icon;            // 模块图标
@@ -194,7 +199,7 @@ class SCModuleConfig {
 }
 
 // 导航配置
-class SCNavigationConfig {
+class NavigationConfig {
   final List<BottomNavItem> bottomNavItems;  // 底部导航项
   final List<DrawerMenuItem> drawerItems;    // 抽屉菜单项
   final List<ModuleCard> moduleCards;        // 主页模块卡片
@@ -275,20 +280,20 @@ lib/modules/finance/transaction_list/
 - 监听 State 变化并更新UI
 
 **设计规范**：
-- 使用路由注解标记页面路径（`@RouterPage`）
-- 提供静态导航方法（`toXxxPage`）
+- 页面构造函数接收 `params` 参数用于接收路由参数
 - State 继承统一的页面基类（`CommonPageState`）
 - 使用 GetX 依赖注入（`Get.put`、`Get.find`）
 - 使用 `Obx` 响应式更新UI
 - 将UI拆分为独立的Widget方法
 - 在 dispose 中清理资源
+- 页面通过 `BoostCacheWidget` 包装以优化性能
 
 **关键要点**：
 - 继承 `CommonPageState` 统一页面生命周期管理
 - 使用 `Obx` 或 `GetBuilder` 实现响应式UI更新
 - UI代码应简洁，复杂逻辑委托给 Logic 层
 - 将大型Widget拆分为独立的私有方法或独立组件
-- 使用 `@RouterPage` 注解声明路由路径
+- 通过构造函数的 `params` 参数接收路由传递的数据
 
 #### 3.3.2 Logic Layer（logic.dart）
 
@@ -369,44 +374,187 @@ lib/modules/finance/transaction_list/
 
 ### 3.5 全局控制器设计
 
-#### 3.5.1 FinanceController（财务模块全局控制器）
+#### 3.5.1 模块控制器设计
 
-采用单例模式设计，提供：
-- 管理跨页面的全局状态
-- 统一的页面导航入口
-- 业务流程协调
-- 模块间通信桥梁
+每个模块可以设计专用的全局控制器，采用 GetX Controller 模式：
 
-**核心方法**：
-- `setCurrentTransaction()`：设置当前交易记录
-- `setCurrentFilter()`：设置当前筛选条件
-- `navigateToXxx()`：统一的导航方法
-- `onXxxSaved()`：业务流程回调
+**FinanceController（财务模块控制器）**：
+```dart
+class FinanceController extends GetxController {
+  // 全局状态管理
+  final currentTransaction = Rx<Transaction?>(null);
+  final currentFilter = Rx<FilterCriteria?>(null);
+
+  // 业务方法
+  void setCurrentTransaction(Transaction? transaction) {
+    currentTransaction.value = transaction;
+  }
+
+  void setCurrentFilter(FilterCriteria? filter) {
+    currentFilter.value = filter;
+  }
+
+  // 导航方法
+  void navigateToTransactionList() {
+    BoostNavigator.instance.push('flutter_finance_transaction_list_page');
+  }
+
+  void navigateToAddTransaction({String? type}) {
+    BoostNavigator.instance.push('flutter_finance_add_transaction_page',
+      arguments: {'type': type});
+  }
+
+  // 业务流程回调
+  void onTransactionSaved(Transaction transaction) {
+    // 处理交易保存后的逻辑
+    setCurrentTransaction(null);
+    navigateToTransactionList();
+  }
+}
+```
+
+**控制器职责**：
+- 管理模块内的全局状态
+- 提供统一的导航入口
+- 协调模块内的业务流程
+- 处理跨页面的数据传递
 
 ### 3.6 路由导航设计
 
-#### 3.6.1 路由注解
+LifeRecord 应用采用 FlutterBoost 框架进行路由管理，通过集中式的路由映射表实现页面导航，支持参数传递和页面缓存优化。
 
-使用 `@RouterPage` 注解声明页面路由：
-- 每个页面都有唯一的路由路径
-- 路径命名规范：`模块名_页面名`（如 `finance_transaction_list`）
+#### 3.6.1 路由映射表设计
 
-#### 3.6.2 导航方法
+使用 `Map<String, FlutterBoostRouteFactory>` 创建路由映射表：
+```dart
+Map<String, FlutterBoostRouteFactory> routerMap = {
+  'flutter_transaction_list_page': (settings, uniqueId) {
+    return MaterialPageRoute(
+      settings: settings,
+      builder: (ctx) => BoostCacheWidget(
+        uniqueId: uniqueId!,
+        builder: (_) => TransactionListPage(
+          params: settings.arguments as Map<dynamic, dynamic>?,
+        ),
+      ),
+    );
+  },
+  // ... 其他路由
+};
+```
 
-每个页面提供静态导航方法：
-- 方法命名：`toXxxPage`
-- 支持传递 arguments 参数
-- 使用 `BoostNavigator.instance.push` 进行导航
+**路由命名规范**：
+- 前缀：`flutter_`（标识Flutter模块路由）
+- 页面标识：`模块名_页面功能_page`
+- 示例：`flutter_finance_transaction_list_page`、`flutter_finance_add_transaction_page`
 
-#### 3.6.3 导航参数传递
+#### 3.6.2 页面路由工厂
 
-**传递参数的两种方式**：
-1. 通过 arguments 传递（适合简单数据）
-2. 通过全局控制器传递（适合复杂对象）
+每个路由对应一个工厂函数，返回具体的路由对象：
 
-**接收参数的两种方式**：
-1. 在 Logic 的 `onReady` 中从 `Get.arguments` 获取
-2. 从全局控制器获取
+**标准路由工厂**：
+```dart
+'flutter_page_name': (settings, uniqueId) {
+  return MaterialPageRoute(
+    settings: settings,
+    builder: (ctx) => BoostCacheWidget(
+      uniqueId: uniqueId!,
+      builder: (_) => TargetPage(
+        params: settings.arguments as Map<dynamic, dynamic>?,
+      ),
+    ),
+  );
+}
+```
+
+**透明背景路由工厂**（用于相机等特殊页面）：
+```dart
+'flutter_camera_page': (settings, uniqueId) {
+  return PageRouteBuilder(
+    settings: settings,
+    opaque: false,
+    barrierColor: Colors.transparent,
+    transitionDuration: const Duration(milliseconds: 0),
+    pageBuilder: (ctx, animation, secondaryAnimation) => CameraPage(
+      params: settings.arguments as Map<dynamic, dynamic>?,
+    ),
+  );
+}
+```
+
+#### 3.6.3 页面缓存优化
+
+使用 `BoostCacheWidget` 包装页面以优化性能：
+- 避免页面多次重建
+- 提升页面切换流畅度
+- 减少不必要的资源消耗
+
+#### 3.6.4 导航参数传递
+
+**参数传递方式**：
+1. 通过 `settings.arguments` 传递 Map 类型参数
+2. 支持基础数据类型和复杂对象序列化
+
+**参数接收方式**：
+1. 在页面构造函数中接收 `params` 参数
+2. 在 Logic 层的 `onReady` 中处理初始化参数
+
+**参数类型转换**：
+```dart
+// 接收参数示例
+class TransactionListPage extends StatelessWidget {
+  final Map<dynamic, dynamic>? params;
+
+  const TransactionListPage({this.params, Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    // 参数处理逻辑
+    return Container();
+  }
+}
+```
+
+#### 3.6.5 导航触发方式
+
+**原生到Flutter页面导航**：
+```dart
+BoostNavigator.instance.push('flutter_transaction_list_page', arguments: {
+  'filterType': 'income',
+  'startDate': '2024-01-01',
+});
+```
+
+**Flutter页面间导航**：
+```dart
+// 使用 BoostNavigator 进行页面跳转
+BoostNavigator.instance.push('flutter_add_transaction_page', arguments: {
+  'transactionType': 'expense',
+  'categoryId': 1,
+});
+```
+
+**带返回值的导航**：
+```dart
+// 异步等待页面返回结果
+final result = await BoostNavigator.instance.push('flutter_select_category_page');
+if (result != null) {
+  // 处理返回的数据
+  handleCategorySelected(result);
+}
+```
+
+#### 3.6.6 路由生命周期管理
+
+**页面创建和销毁**：
+- 路由工厂函数在页面首次创建时调用
+- `BoostCacheWidget` 在页面不可见时保持状态
+- `uniqueId` 用于标识页面实例
+
+**页面可见性监听**：
+- 通过 `PageVisibilityBinding` 监听页面显示/隐藏
+- 支持页面前后台切换监听
+- 便于实现埋点和资源管理
 
 ### 3.7 状态管理模式
 
@@ -426,17 +574,220 @@ lib/modules/finance/transaction_list/
 
 ### 3.8 页面间通信
 
-#### 3.8.1 通过全局控制器
+#### 3.8.1 通过路由参数传递
 
-适用于跨页面共享状态
+**适用场景**：
+- 页面间传递初始化数据
+- 传递简单配置参数
+- 页面创建时的参数传递
 
-#### 3.8.2 通过路由参数
+**实现方式**：
+```dart
+// 发送参数
+BoostNavigator.instance.push('flutter_transaction_detail_page', arguments: {
+  'transactionId': 123,
+  'editMode': true,
+});
 
-适用于页面间传递简单数据和接收返回值
+// 接收参数
+class TransactionDetailPage extends StatelessWidget {
+  final Map<dynamic, dynamic>? params;
 
-#### 3.8.3 通过 EventBus（可选）
+  const TransactionDetailPage({this.params, Key? key}) : super(key: key);
 
-适用于模块间松耦合通信
+  @override
+  Widget build(BuildContext context) {
+    final transactionId = params?['transactionId'] as int?;
+    final editMode = params?['editMode'] as bool? ?? false;
+    // 使用参数进行页面初始化
+    return Container();
+  }
+}
+```
+
+#### 3.8.2 通过全局控制器
+
+**适用场景**：
+- 跨页面共享复杂状态
+- 业务流程中的数据传递
+- 模块内的状态同步
+
+**实现方式**：
+```dart
+// 在控制器中存储状态
+class FinanceController extends GetxController {
+  final selectedTransaction = Rx<Transaction?>(null);
+
+  void selectTransaction(Transaction transaction) {
+    selectedTransaction.value = transaction;
+  }
+}
+
+// 页面A设置数据
+final controller = Get.find<FinanceController>();
+controller.selectTransaction(transaction);
+
+// 页面B获取数据
+class TransactionDetailLogic extends GetxController {
+  final controller = Get.find<FinanceController>();
+
+  @override
+  void onReady() {
+    super.onReady();
+    final transaction = controller.selectedTransaction.value;
+    if (transaction != null) {
+      // 使用交易数据初始化页面
+      loadTransactionDetail(transaction.id);
+    }
+  }
+}
+```
+
+#### 3.8.3 通过页面返回值
+
+**适用场景**：
+- 选择器页面返回选择结果
+- 表单页面返回保存的数据
+- 确认对话框返回用户选择
+
+**实现方式**：
+```dart
+// 页面A发起导航并等待结果
+Future<void> selectCategory() async {
+  final result = await BoostNavigator.instance.push('flutter_category_selector_page');
+  if (result != null && result is Map) {
+    final selectedCategory = Category.fromJson(result);
+    // 处理选择的分类
+    updateSelectedCategory(selectedCategory);
+  }
+}
+
+// 页面B返回结果
+void onCategorySelected(Category category) {
+  BoostNavigator.instance.pop(result: category.toJson());
+}
+```
+
+#### 3.8.4 通过 Boost 事件通道
+
+**适用场景**：
+- 原生与Flutter间的通信
+- 跨模块的事件通知
+- 系统级事件监听（如语言切换）
+
+**实现方式**：
+```dart
+// 监听语言切换事件
+BoostChannel.instance.addEventListener("changeLanguage", (key, arguments) {
+  if (arguments != null && arguments.containsKey('languageCode')) {
+    final code = arguments['languageCode'];
+    // 处理语言切换逻辑
+    updateAppLanguage(code);
+  }
+  return Future.value(null);
+});
+```
+
+### 3.9 FlutterBoost 集成设计
+
+#### 3.9.1 框架初始化
+
+**CustomFlutterBinding**：
+```dart
+class CustomFlutterBinding extends WidgetsFlutterBinding
+    with BoostFlutterBinding {}
+```
+
+**应用入口配置**：
+```dart
+void main() async {
+  // 创建自定义Binding
+  CustomFlutterBinding();
+
+  // 初始化FlutterBoost
+  PageVisibilityBinding.instance.addGlobalObserver(AppGlobalPageVisibilityObserver());
+
+  runApp(MyApp());
+}
+```
+
+#### 3.9.2 路由系统架构
+
+**FlutterBoostApp配置**：
+```dart
+class MyApp extends StatefulWidget {
+  @override
+  Widget build(BuildContext context) {
+    return FlutterBoostApp(
+      routeFactory,  // 路由工厂函数
+      appBuilder: appBuilder,  // 应用构建器
+    );
+  }
+}
+```
+
+**路由工厂实现**：
+```dart
+Route<dynamic>? routeFactory(RouteSettings settings, String? uniqueId) {
+  FlutterBoostRouteFactory? func = routerMap[settings.name!];
+  if (func == null) {
+    return null;
+  }
+  return func(settings, uniqueId);
+}
+```
+
+#### 3.9.3 页面可见性管理
+
+**全局页面观察者**：
+```dart
+class AppGlobalPageVisibilityObserver extends GlobalPageVisibilityObserver {
+  @override
+  void onPageShow(Route<dynamic> route) {
+    // 页面显示时的处理逻辑
+    Log.i('Page Show: ${route.settings.name}');
+  }
+
+  @override
+  void onPageHide(Route<dynamic> route) {
+    // 页面隐藏时的处理逻辑
+    Log.i('Page Hide: ${route.settings.name}');
+  }
+}
+```
+
+#### 3.9.4 页面生命周期集成
+
+**与GetX生命周期结合**：
+```dart
+class TransactionListLogic extends GetxController {
+  @override
+  void onReady() {
+    super.onReady();
+    // 页面初始化逻辑
+    // FlutterBoost的onPageShow时会触发
+  }
+
+  @override
+  void onClose() {
+    // 页面销毁逻辑
+    // FlutterBoost的onPageHide时会触发
+    super.onClose();
+  }
+}
+```
+
+#### 3.9.5 性能优化策略
+
+**BoostCacheWidget使用**：
+- 避免页面重建，提升切换流畅度
+- 保持页面状态，减少数据重新加载
+- 内存管理优化，自动清理不活跃页面
+
+**路由懒加载**：
+- 页面路由工厂延迟创建页面实例
+- 根据需要动态加载页面组件
+- 减少应用启动时的初始化开销
 
 ### 3.9 错误处理和加载状态
 
@@ -596,40 +947,212 @@ stateDiagram-v2
 
 ### 4.2 数据模型设计
 
-#### 4.2.1 收支记录模型 (SCTransaction)
+#### 4.2.1 收支记录模型 (Transaction)
 ```dart
-class SCTransaction {
+class Transaction {
   final int? id;
   final double amount;           // 金额
   final String type;             // 'income' 或 'expense'
   final int categoryId;          // 小类ID (外键关联categories表)
   final int parentCategoryId;    // 大类ID (外键关联categories表)
-  final String categoryName;     // 小类名称 (冗余字段，提升查询性能)
-  final String parentCategoryName; // 大类名称 (冗余字段，提升查询性能)
   final String? description;     // 备注说明 (可选)
   final DateTime date;           // 日期时间
   final DateTime createdAt;      // 创建时间
   final DateTime? updatedAt;     // 更新时间
 
-  SCTransaction({
+  Transaction({
     this.id,
     required this.amount,
     required this.type,
     required this.categoryId,
     required this.parentCategoryId,
-    required this.categoryName,
-    required this.parentCategoryName,
     this.description,
     required this.date,
     required this.createdAt,
     this.updatedAt,
   });
+
+  // 获取完整分类名称 (大类→小类)，通过关联查询获取
+  Future<String> getFullCategoryName(DatabaseService db) async {
+    final category = await db.getCategoryById(categoryId);
+    final parentCategory = await db.getCategoryById(parentCategoryId);
+    return '${parentCategory?.name ?? ''}→${category?.name ?? ''}';
+  }
+
+  // 获取小类名称，通过关联查询获取
+  Future<String?> getCategoryName(DatabaseService db) async {
+    final category = await db.getCategoryById(categoryId);
+    return category?.name;
+  }
+
+  // 获取大类名称，通过关联查询获取
+  Future<String?> getParentCategoryName(DatabaseService db) async {
+    final category = await db.getCategoryById(parentCategoryId);
+    return category?.name;
+  }
 }
 ```
 
-#### 4.2.2 收支分类模型 (SCCategory)
+#### 4.2.1.1 筛选条件模型 (FilterCriteria)
 ```dart
-class SCCategory {
+class FilterCriteria {
+  final DateTime? startDate;           // 开始日期
+  final DateTime? endDate;             // 结束日期
+  final String? type;                  // 收支类型: 'income', 'expense', null(全部)
+  final List<int>? categoryIds;        // 小类ID列表 (支持多选)
+  final List<int>? parentCategoryIds;  // 大类ID列表 (支持多选)
+  final double? minAmount;             // 最小金额
+  final double? maxAmount;             // 最大金额
+  final String? searchKeyword;         // 备注搜索关键词
+  final bool? hasDescription;          // 是否有备注筛选
+
+  FilterCriteria({
+    this.startDate,
+    this.endDate,
+    this.type,
+    this.categoryIds,
+    this.parentCategoryIds,
+    this.minAmount,
+    this.maxAmount,
+    this.searchKeyword,
+    this.hasDescription,
+  });
+
+  // 创建副本用于修改
+  FilterCriteria copyWith({
+    DateTime? startDate,
+    DateTime? endDate,
+    String? type,
+    List<int>? categoryIds,
+    List<int>? parentCategoryIds,
+    double? minAmount,
+    double? maxAmount,
+    String? searchKeyword,
+    bool? hasDescription,
+  }) {
+    return FilterCriteria(
+      startDate: startDate ?? this.startDate,
+      endDate: endDate ?? this.endDate,
+      type: type ?? this.type,
+      categoryIds: categoryIds ?? this.categoryIds,
+      parentCategoryIds: parentCategoryIds ?? this.parentCategoryIds,
+      minAmount: minAmount ?? this.minAmount,
+      maxAmount: maxAmount ?? this.maxAmount,
+      searchKeyword: searchKeyword ?? this.searchKeyword,
+      hasDescription: hasDescription ?? this.hasDescription,
+    );
+  }
+
+  // 检查是否有活跃的筛选条件
+  bool get hasActiveFilters =>
+    startDate != null ||
+    endDate != null ||
+    type != null ||
+    (categoryIds?.isNotEmpty ?? false) ||
+    (parentCategoryIds?.isNotEmpty ?? false) ||
+    minAmount != null ||
+    maxAmount != null ||
+    (searchKeyword?.isNotEmpty ?? false) ||
+    hasDescription != null;
+
+  // 清空所有筛选条件
+  FilterCriteria clear() {
+    return FilterCriteria();
+  }
+
+  // 获取筛选条件的文字描述
+  String getFilterDescription() {
+    List<String> parts = [];
+
+    if (startDate != null && endDate != null) {
+      parts.add('时间: ${startDate!.year}-${startDate!.month}-${startDate!.day} 至 ${endDate!.year}-${endDate!.month}-${endDate!.day}');
+    } else if (startDate != null) {
+      parts.add('从 ${startDate!.year}-${startDate!.month}-${startDate!.day} 开始');
+    } else if (endDate != null) {
+      parts.add('至 ${endDate!.year}-${endDate!.month}-${endDate!.day}');
+    }
+
+    if (type != null) {
+      parts.add('类型: ${type == 'income' ? '收入' : '支出'}');
+    }
+
+    if (categoryIds?.isNotEmpty ?? false) {
+      parts.add('分类: ${categoryIds!.length} 个小类');
+    }
+
+    if (parentCategoryIds?.isNotEmpty ?? false) {
+      parts.add('大类: ${parentCategoryIds!.length} 个大类');
+    }
+
+    if (minAmount != null || maxAmount != null) {
+      String amountStr = '';
+      if (minAmount != null && maxAmount != null) {
+        amountStr = '${minAmount} - ${maxAmount}';
+      } else if (minAmount != null) {
+        amountStr = '>= ${minAmount}';
+      } else if (maxAmount != null) {
+        amountStr = '<= ${maxAmount}';
+      }
+      parts.add('金额: ${amountStr}');
+    }
+
+    if (searchKeyword?.isNotEmpty ?? false) {
+      parts.add('备注: "${searchKeyword}"');
+    }
+
+    return parts.isEmpty ? '无筛选条件' : parts.join(', ');
+  }
+}
+```
+
+#### 4.2.1.2 筛选模板模型 (FilterPreset)
+```dart
+class FilterPreset {
+  final String id;                    // 模板唯一标识
+  final String name;                  // 模板名称
+  final FilterCriteria criteria;      // 筛选条件
+  final DateTime createdAt;           // 创建时间
+  final DateTime? updatedAt;          // 更新时间
+  final int? useCount;               // 使用次数 (统计用户偏好)
+
+  FilterPreset({
+    required this.id,
+    required this.name,
+    required this.criteria,
+    DateTime? createdAt,
+    this.updatedAt,
+    this.useCount = 0,
+  }) : createdAt = createdAt ?? DateTime.now();
+
+  // 使用模板时增加使用次数
+  FilterPreset incrementUseCount() {
+    return FilterPreset(
+      id: id,
+      name: name,
+      criteria: criteria,
+      createdAt: createdAt,
+      updatedAt: DateTime.now(),
+      useCount: (useCount ?? 0) + 1,
+    );
+  }
+
+  // 更新模板条件
+  FilterPreset updateCriteria(FilterCriteria newCriteria) {
+    return FilterPreset(
+      id: id,
+      name: name,
+      criteria: newCriteria,
+      createdAt: createdAt,
+      updatedAt: DateTime.now(),
+      useCount: useCount,
+    );
+  }
+}
+```
+
+#### 4.2.2 收支分类模型 (Category)
+```dart
+class Category {
   final int? id;
   final String name;             // 分类名称
   final String type;             // 'income' 或 'expense'
@@ -641,7 +1164,7 @@ class SCCategory {
   final DateTime? createdAt;     // 创建时间
   final DateTime? updatedAt;     // 更新时间
 
-  SCCategory({
+  Category({
     this.id,
     required this.name,
     required this.type,
@@ -659,6 +1182,71 @@ class SCCategory {
 
   // 是否为小类（子分类）
   bool get isChild => parentId != null;
+
+  // 获取完整分类路径（用于显示）
+  Future<String> getFullPath(DatabaseService db) async {
+    if (isParent) {
+      return name;
+    } else {
+      final parent = await db.getCategoryById(parentId!);
+      return '${parent?.name ?? '未知大类'} → $name';
+    }
+  }
+
+  // 获取子分类数量（仅对大类有效）
+  Future<int> getChildCount(DatabaseService db) async {
+    if (isParent && id != null) {
+      return await db.getChildCategoryCount(id!);
+    }
+    return 0;
+  }
+
+  // 验证分类数据的完整性
+  bool get isValid {
+    return name.isNotEmpty &&
+           (type == 'income' || type == 'expense') &&
+           icon.isNotEmpty &&
+           color.isNotEmpty &&
+           sortOrder >= 0;
+  }
+
+  // 创建副本用于修改
+  Category copyWith({
+    int? id,
+    String? name,
+    String? type,
+    String? icon,
+    String? color,
+    int? sortOrder,
+    int? parentId,
+    bool? isDefault,
+    DateTime? createdAt,
+    DateTime? updatedAt,
+  }) {
+    return Category(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      type: type ?? this.type,
+      icon: icon ?? this.icon,
+      color: color ?? this.color,
+      sortOrder: sortOrder ?? this.sortOrder,
+      parentId: parentId ?? this.parentId,
+      isDefault: isDefault ?? this.isDefault,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
+
+  // 用于排序的比较方法
+  int compareTo(Category other) {
+    final typeCompare = type.compareTo(other.type);
+    if (typeCompare != 0) return typeCompare;
+
+    final parentCompare = (parentId ?? 0).compareTo(other.parentId ?? 0);
+    if (parentCompare != 0) return parentCompare;
+
+    return sortOrder.compareTo(other.sortOrder);
+  }
 }
 ```
 
@@ -672,12 +1260,18 @@ class SCCategory {
 - type (TEXT NOT NULL) -- 'income'/'expense'
 - category_id (INTEGER NOT NULL) -- 小类ID，外键关联categories表
 - parent_category_id (INTEGER NOT NULL) -- 大类ID，外键关联categories表
-- category_name (TEXT NOT NULL) -- 小类名称 (冗余字段)
-- parent_category_name (TEXT NOT NULL) -- 大类名称 (冗余字段)
 - description (TEXT) -- 备注说明 (可选)
 - date (TEXT NOT NULL) -- ISO 8601格式
 - created_at (TEXT NOT NULL)
 - updated_at (TEXT)
+
+**filter_presets 表** (新增 - 筛选模板存储):
+- id (TEXT PRIMARY KEY)
+- name (TEXT NOT NULL)
+- criteria_json (TEXT NOT NULL) -- 序列化的FilterCriteria JSON
+- created_at (TEXT NOT NULL)
+- updated_at (TEXT)
+- use_count (INTEGER DEFAULT 0)
 
 **categories 表**:
 - id (INTEGER PRIMARY KEY)
@@ -698,8 +1292,8 @@ class DatabaseService {
   Future<Database> initDatabase();
 
   // 收支记录 CRUD 操作
-  Future<int> insertTransaction(SCTransaction transaction);
-  Future<List<SCTransaction>> getTransactions({
+  Future<int> insertTransaction(Transaction transaction);
+  Future<List<Transaction>> getTransactions({
     DateTime? startDate,
     DateTime? endDate,
     String? type,  // 'income', 'expense', or null for all
@@ -709,20 +1303,20 @@ class DatabaseService {
     double? maxAmount,
     String? searchKeyword,  // 备注搜索关键词
   });
-  Future<List<SCTransaction>> getTransactionsByCategory({
+  Future<List<Transaction>> getTransactionsByCategory({
     required String categoryName,
     DateTime? startDate,
     DateTime? endDate,
   });
-  Future<int> updateTransaction(SCTransaction transaction);
+  Future<int> updateTransaction(Transaction transaction);
   Future<int> deleteTransaction(int id);
 
   // 分类 CRUD 操作
-  Future<int> insertCategory(SCCategory category);
-  Future<List<SCCategory>> getCategories(String type);  // 获取所有分类（树形结构）
-  Future<List<SCCategory>> getParentCategories(String type);  // 获取大类
-  Future<List<SCCategory>> getChildCategories(int parentId);  // 获取指定大类下的小类
-  Future<int> updateCategory(SCCategory category);
+  Future<int> insertCategory(Category category);
+  Future<List<Category>> getCategories(String type);  // 获取所有分类（树形结构）
+  Future<List<Category>> getParentCategories(String type);  // 获取大类
+  Future<List<Category>> getChildCategories(int parentId);  // 获取指定大类下的小类
+  Future<int> updateCategory(Category category);
   Future<int> deleteCategory(int id);
 
   // 统计查询
@@ -737,6 +1331,30 @@ class DatabaseService {
     DateTime? endDate,
     bool includeChildren = true,  // 是否包含子分类统计
   });  // 详细分类统计（支持层级）
+
+  // 新增方法：支持FilterCriteria的查询
+  Future<List<Transaction>> getTransactionsByFilter(FilterCriteria filter) async {
+    return getTransactions(
+      startDate: filter.startDate,
+      endDate: filter.endDate,
+      type: filter.type,
+      categoryIds: filter.categoryIds,
+      parentCategoryIds: filter.parentCategoryIds,
+      minAmount: filter.minAmount,
+      maxAmount: filter.maxAmount,
+      searchKeyword: filter.searchKeyword,
+    );
+  }
+
+  // 新增方法：根据ID获取单个分类
+  Future<Category?> getCategoryById(int id);
+
+  // 新增方法：获取大类下的小类数量
+  Future<int> getChildCategoryCount(int parentId);
+
+  // 新增方法：筛选预设的持久化存储
+  Future<void> saveFilterPresets(List<FilterPreset> presets);
+  Future<List<FilterPreset>> loadFilterPresets();
 }
 ```
 
@@ -768,7 +1386,7 @@ class DatabaseService {
 
 #### 4.4.1.2 主页布局配置
 ```dart
-class SCHomeLayoutConfig {
+class HomeLayoutConfig {
   final int crossAxisCount;      // 网格列数（响应式调整）
   final double cardAspectRatio;  // 卡片宽高比
   final List<String> moduleOrder; // 模块显示顺序
@@ -861,8 +1479,8 @@ class SCHomeLayoutConfig {
 ```dart
 // 模块管理状态管理
 class ModuleProvider extends ChangeNotifier {
-  List<SCModuleConfig> _enabledModules = [];
-  List<SCModuleConfig> _availableModules = [];
+  List<ModuleConfig> _enabledModules = [];
+  List<ModuleConfig> _availableModules = [];
   Map<String, dynamic> _moduleSettings = {};
 
   // 模块管理方法
@@ -873,26 +1491,19 @@ class ModuleProvider extends ChangeNotifier {
   Future<void> updateModuleSettings(String moduleId, Map<String, dynamic> settings) async { ... }
 
   // 计算属性
-  List<SCModuleConfig> get enabledModules => _enabledModules;
-  List<SCModuleConfig> get availableModules => _availableModules;
+  List<ModuleConfig> get enabledModules => _enabledModules;
+  List<ModuleConfig> get availableModules => _availableModules;
   bool isModuleEnabled(String moduleId) => _enabledModules.any((m) => m.id == moduleId);
 }
 
-class SCTransactionProvider extends ChangeNotifier {
+class TransactionProvider extends ChangeNotifier {
   final DatabaseService _databaseService;
-  List<SCTransaction> _transactions = [];
-  List<SCCategory> _incomeCategories = [];
-  List<SCCategory> _expenseCategories = [];
+  List<Transaction> _transactions = [];
+  List<Category> _incomeCategories = [];
+  List<Category> _expenseCategories = [];
 
-  // 筛选状态
-  DateTime? _filterStartDate;
-  DateTime? _filterEndDate;
-  String? _filterType;  // 'income', 'expense', or null
-  List<int> _filterCategoryIds = [];  // 小类ID列表
-  List<int> _filterParentCategoryIds = [];  // 大类ID列表
-  double? _filterMinAmount;
-  double? _filterMaxAmount;
-  String? _filterSearchKeyword;  // 备注搜索关键词
+  // 筛选状态 - 使用统一的FilterCriteria模型
+  FilterCriteria _filterCriteria = FilterCriteria();
 
   // 统计数据缓存
   Map<String, double> _categoryStats = {};
@@ -901,18 +1512,86 @@ class SCTransactionProvider extends ChangeNotifier {
   // 业务方法
   Future<void> loadTransactions() async { ... }
   Future<void> loadFilteredTransactions() async { ... }  // 加载筛选后的交易记录
-  Future<void> addTransaction(SCTransaction transaction) async { ... }
-  Future<void> updateTransaction(SCTransaction transaction) async { ... }
+  Future<void> addTransaction(Transaction transaction) async { ... }
+  Future<void> updateTransaction(Transaction transaction) async { ... }
   Future<void> deleteTransaction(int id) async { ... }
 
-  // 筛选方法
-  void setDateFilter(DateTime? start, DateTime? end) { ... }
-  void setTypeFilter(String? type) { ... }
-  void setCategoryFilter(List<String> categories) { ... }
-  void setAmountFilter(double? min, double? max) { ... }
-  void clearFilters() { ... }
-  void saveFilterPreset(String name) { ... }  // 保存筛选预设
-  void loadFilterPreset(String name) { ... }  // 加载筛选预设
+  // 筛选方法 - 基于FilterCriteria的统一接口
+  void setFilterCriteria(FilterCriteria criteria) {
+    _filterCriteria = criteria;
+    loadFilteredTransactions();
+    notifyListeners();
+  }
+
+  void updateFilterCriteria(FilterCriteria Function(FilterCriteria) updater) {
+    _filterCriteria = updater(_filterCriteria);
+    loadFilteredTransactions();
+    notifyListeners();
+  }
+
+  void clearFilters() {
+    _filterCriteria = FilterCriteria();
+    loadTransactions();
+    notifyListeners();
+  }
+
+  FilterCriteria get currentFilterCriteria => _filterCriteria;
+
+  // 便捷的筛选设置方法
+  void setDateFilter(DateTime? start, DateTime? end) {
+    updateFilterCriteria((criteria) => criteria.copyWith(startDate: start, endDate: end));
+  }
+
+  void setTypeFilter(String? type) {
+    updateFilterCriteria((criteria) => criteria.copyWith(type: type));
+  }
+
+  void setCategoryFilter(List<int> categoryIds, List<int> parentCategoryIds) {
+    updateFilterCriteria((criteria) => criteria.copyWith(
+      categoryIds: categoryIds,
+      parentCategoryIds: parentCategoryIds,
+    ));
+  }
+
+  void setAmountFilter(double? min, double? max) {
+    updateFilterCriteria((criteria) => criteria.copyWith(minAmount: min, maxAmount: max));
+  }
+
+  void setSearchKeyword(String? keyword) {
+    updateFilterCriteria((criteria) => criteria.copyWith(searchKeyword: keyword));
+  }
+
+  // 筛选预设管理
+  List<FilterPreset> _filterPresets = [];
+
+  List<FilterPreset> get filterPresets => _filterPresets;
+
+  void saveFilterPreset(String name) {
+    final preset = FilterPreset(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      name: name,
+      criteria: _filterCriteria,
+    );
+    _filterPresets.add(preset);
+    notifyListeners();
+  }
+
+  void loadFilterPreset(String presetId) {
+    final preset = _filterPresets.firstWhere((p) => p.id == presetId);
+    setFilterCriteria(preset.criteria);
+
+    // 更新使用次数
+    final index = _filterPresets.indexWhere((p) => p.id == presetId);
+    if (index != -1) {
+      _filterPresets[index] = preset.incrementUseCount();
+      notifyListeners();
+    }
+  }
+
+  void deleteFilterPreset(String presetId) {
+    _filterPresets.removeWhere((p) => p.id == presetId);
+    notifyListeners();
+  }
 
   // 统计方法
   Future<void> loadStatistics() async { ... }  // 加载当前筛选条件下的统计数据
@@ -923,7 +1602,10 @@ class SCTransactionProvider extends ChangeNotifier {
   double get totalIncome => ...;
   double get totalExpense => ...;
   double get balance => ...;
-  bool get hasActiveFilters => ...;  // 是否有活跃的筛选条件
+  bool get hasActiveFilters => _filterCriteria.hasActiveFilters;
+
+  // 获取当前筛选条件的文字描述
+  String get filterDescription => _filterCriteria.getFilterDescription();
 }
 ```
 
@@ -1121,7 +1803,25 @@ class SCTransactionProvider extends ChangeNotifier {
   - 用户自定义设置持久化
   - 配置导入导出功能
 
-### 4.7 错误处理
+#### 4.6.6 数据结构优化说明
+
+#### 4.6.6.1 优化目标
+- **消除数据冗余**: 移除Transaction模型中的categoryName和parentCategoryName冗余字段
+- **统一筛选管理**: 使用FilterCriteria模型统一管理所有筛选条件
+- **增强数据一致性**: 通过关联查询确保分类名称的实时准确性
+- **提升维护性**: 简化状态管理和数据验证逻辑
+
+#### 4.6.6.2 性能考虑
+- **查询优化**: 通过数据库关联查询获取分类信息，避免数据同步问题
+- **缓存策略**: 考虑对常用分类信息进行内存缓存，减少数据库查询
+- **索引优化**: 为筛选频繁使用的字段添加适当的数据库索引
+
+#### 4.6.6.3 向后兼容性
+- **数据库迁移**: 需要迁移脚本将现有数据中的冗余字段移除
+- **API兼容**: 保持现有API接口不变，通过计算属性提供兼容性
+- **数据迁移**: 确保现有用户数据在升级时完整保留
+
+## 4.7 错误处理
 - 数据库操作失败: 显示友好提示
 - 网络异常: 离线模式友好提示
 - 数据验证失败: 表单验证提示
@@ -1195,27 +1895,27 @@ class SCTransactionProvider extends ChangeNotifier {
 graph TB
     subgraph "用户界面层 (UI Layer)"
         A[主页 HomeScreen]
-        B[收支模块 FinanceModule]
+        B[财务模块 FinanceModule]
         C[其他模块 Modules]
         D[设置页面 SettingsScreen]
     end
 
-    subgraph "模块化系统 (Module System)"
-        E[模块配置 SCModuleConfig]
-        F[模块管理器 ModuleManager]
-        G[路由管理 NavigationManager]
+    subgraph "FlutterBoost路由系统"
+        E[路由映射表 RouterMap]
+        F[页面工厂 RouteFactory]
+        G[BoostCacheWidget缓存]
     end
 
-    subgraph "状态管理层 (State Management)"
-        H[SCTransactionProvider]
-        I[ModuleProvider]
-        J[其他Provider]
+    subgraph "状态管理层 (GetX)"
+        H[FinanceController]
+        I[TransactionLogic]
+        J[页面State管理]
     end
 
-    subgraph "业务逻辑层 (Business Logic)"
-        K[收支服务 FinanceService]
-        L[数据库服务 DatabaseService]
-        M[其他服务 Services]
+    subgraph "业务逻辑层 (Services)"
+        K[FinanceService]
+        L[DatabaseService]
+        M[其他业务服务]
     end
 
     subgraph "数据存储层 (Data Layer)"
@@ -1227,9 +1927,9 @@ graph TB
     A --> E
     B --> E
     C --> E
-    D --> F
+    D --> E
 
-    E --> G
+    E --> F
     F --> G
 
     A --> H
@@ -1237,10 +1937,10 @@ graph TB
     C --> I
 
     H --> K
-    I --> L
-    J --> M
+    I --> K
+    J --> K
 
-    K --> N
+    K --> L
     L --> N
     M --> O
     M --> P
@@ -1379,8 +2079,8 @@ graph TB
     end
 
     subgraph "数据模型 (models/finance/)"
-        C1[SCTransaction]
-        C2[SCCategory]
+        C1[Transaction]
+        C2[Category]
         C3[FilterCriteria]
     end
 
@@ -1442,32 +2142,38 @@ graph TB
 graph LR
     subgraph "表现层 (Presentation)"
         A1[Flutter Widgets]
-        A2[Material Design]
+        A2[Material Design 3]
         A3[自定义组件]
     end
 
-    subgraph "页面逻辑 (Page Logic)"
-        B1[logic.dart]
-        B2[state.dart]
-        B3[widgets.dart]
+    subgraph "FlutterBoost路由层"
+        B1[RouterMap路由表]
+        B2[RouteFactory工厂]
+        B3[BoostCacheWidget缓存]
     end
 
-    subgraph "业务服务 (Business Services)"
-        C1[Database Services]
-        C2[API Services (预留)]
-        C3[Utility Services]
+    subgraph "页面架构层 (MVVM)"
+        C1[logic.dart - 业务逻辑]
+        C2[state.dart - 状态管理]
+        C3[widgets.dart - 组件]
     end
 
-    subgraph "数据模型 (Data Models)"
-        D1[Entity Models]
-        D2[DTO Models]
-        D3[Configuration Models]
+    subgraph "业务服务层 (Services)"
+        D1[Database Services]
+        D2[API Services 预留]
+        D3[Utility Services]
     end
 
-    subgraph "数据存储 (Data Storage)"
-        E1[SQLite Database]
-        E2[SharedPreferences]
-        E3[File System]
+    subgraph "数据模型层 (Models)"
+        E1[Entity Models]
+        E2[DTO Models]
+        E3[Configuration Models]
+    end
+
+    subgraph "数据存储层 (Storage)"
+        F1[SQLite Database]
+        F2[SharedPreferences]
+        F3[File System]
     end
 
     A1 --> B1
@@ -1475,8 +2181,8 @@ graph LR
     A3 --> B1
 
     B1 --> C1
-    B2 --> C2
-    B3 --> C3
+    B2 --> C1
+    B3 --> C2
 
     C1 --> D1
     C2 --> D2
@@ -1485,6 +2191,10 @@ graph LR
     D1 --> E1
     D2 --> E2
     D3 --> E3
+
+    E1 --> F1
+    E2 --> F2
+    E3 --> F3
 
     style A1 fill:#e3f2fd
     style B1 fill:#f3e5f5
@@ -1497,32 +2207,36 @@ graph LR
 
 ```mermaid
 stateDiagram-v2
-    [*] --> 未安装: 模块未添加到应用
-    未安装 --> 已禁用: 用户选择安装但未启用
-    已禁用 --> 正在初始化: 用户启用模块
-    正在初始化 --> 已激活: 初始化完成
-    已激活 --> 运行中: 用户访问模块
-    运行中 --> 休眠中: 长时间未使用
-    休眠中 --> 运行中: 用户重新访问
-    运行中 --> 已禁用: 用户手动禁用
-    已激活 --> 已禁用: 用户手动禁用
-    正在初始化 --> 初始化失败: 初始化出错
-    初始化失败 --> 已禁用: 返回禁用状态
-    已禁用 --> [*]: 用户完全卸载模块
+    [*] --> 路由注册: 在RouterMap中注册
+    路由注册 --> 页面创建: 首次导航到页面
+    页面创建 --> 缓存中: 包装BoostCacheWidget
 
-    note right of 运行中
-        模块完全可用
-        所有功能正常
+    缓存中 --> 页面显示: 用户访问页面
+    页面显示 --> 页面激活: onPageShow触发
+    页面激活 --> 页面隐藏: 用户离开页面
+    页面隐藏 --> 页面显示: 用户返回页面
+
+    页面激活 --> 应用后台: 应用切换到后台
+    应用后台 --> 页面激活: 应用回到前台
+
+    页面隐藏 --> 页面销毁: 长时间未使用或内存不足
+    页面销毁 --> [*]: 清理资源
+
+    缓存中 --> 页面销毁: 手动清理缓存
+
+    note right of 页面显示
+        FlutterBoost管理页面可见性
+        PageVisibilityObserver监听状态
     end note
 
-    note right of 休眠中
-        保持状态数据
-        释放部分资源
+    note right of 缓存中
+        BoostCacheWidget保持页面状态
+        避免重复创建和销毁
     end note
 
-    note right of 已禁用
-        模块存在但不显示
-        可随时重新启用
+    note right of 页面激活
+        页面完全可用
+        可以处理用户交互
     end note
 ```
 
@@ -1593,7 +2307,7 @@ flowchart TD
 
 2. **定义模块配置**:
    ```dart
-   final diaryModule = SCModuleConfig(
+   final diaryModule = ModuleConfig(
      id: 'diary',
      name: '日记',
      icon: '📓',
@@ -1618,7 +2332,7 @@ flowchart TD
      List<ModuleProvider> get providers => [DiaryProvider()];
 
      @override
-     SCModuleConfig get config => diaryModule;
+     ModuleConfig get config => diaryModule;
 
      @override
      Widget getHomeCard() => DiaryHomeCard();
